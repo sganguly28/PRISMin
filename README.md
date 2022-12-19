@@ -9,7 +9,7 @@ Requires ROOT and a C++17-capable compiler
 ## Build like:
 
 ```
-git clone 
+git clone https://github.com/luketpickering/PRISMin.git
 cd PRISMin; mkdir build
 cd build
 cmake ..
