@@ -61,6 +61,17 @@ TH2D *NDFlux_293kA;
 TH2D *NDFlux_280kA;
 TH1D *FDFlux;
 
+TH1D *StroboFlux_bin0;
+TH1D *StroboFlux_bin1;
+TH1D *StroboFlux_bin2;
+TH1D *StroboFlux_bin3;
+TH1D *StroboFlux_bin4;
+TH1D *StroboFlux_bin5;
+TH1D *StroboFlux_bin6;
+TH1D *StroboFlux_underbin;
+
+
+
 size_t OnAxisBin;
 size_t MaxOffAxisBin;
 size_t NEnergyBins;
@@ -216,12 +227,26 @@ int main(int argc, const char *argv[]) {
   gStyle->SetOptStat(false);
 
   TFile fin(argv[1], "READ");
+  TFile fin1(argv[2], "READ");
 
   NDFlux_293kA = fin.Get<TH2D>("ND_293kA_nu_numu");
   NDFlux_280kA = fin.Get<TH2D>("ND_280kA_nu_numu");
   FDFlux = fin.Get<TH1D>("FD_nu_numu");
 
+  //8 additional histograms from strobocopic approach
+
+  StroboFlux_bin0 = fin1.Get<TH1D>("BeamEspect_vmu_bin0");
+  StroboFlux_bin1 = fin1.Get<TH1D>("BeamEspect_vmu_bin1");
+  StroboFlux_bin2 = fin1.Get<TH1D>("BeamEspect_vmu_bin2");
+  StroboFlux_bin3 = fin1.Get<TH1D>("BeamEspect_vmu_bin3");
+  StroboFlux_bin4 = fin1.Get<TH1D>("BeamEspect_vmu_bin4");
+  StroboFlux_bin5 = fin1.Get<TH1D>("BeamEspect_vmu_bin5");
+  StroboFlux_bin6 = fin1.Get<TH1D>("BeamEspect_vmu_bin6");
+  StroboFlux_underbin = fin1.Get<TH1D>("BeamEspect_vmu_under");  
+
+
   OnAxisBin = NDFlux_293kA->GetYaxis()->FindFixBin(0.0);
+
   MaxOffAxisBin = NDFlux_293kA->GetYaxis()->FindFixBin(28.5);
 
   // The fluxes we are using here are very finely binned in energy, average over
@@ -231,6 +256,26 @@ int main(int argc, const char *argv[]) {
   NDFlux_293kA->Scale(1.0 / double(EnergyRebin));
   NDFlux_280kA->RebinX(EnergyRebin);
   NDFlux_280kA->Scale(1.0 / double(EnergyRebin));
+
+
+  int EnergyRebinStrobo = 5;
+  StroboFlux_bin0->RebinX(EnergyRebinStrobo);
+  StroboFlux_bin0->Scale(1.0/ double(EnergyRebinStrobo));
+  StroboFlux_bin1->RebinX(EnergyRebinStrobo);
+  StroboFlux_bin1->Scale(1.0/ double(EnergyRebinStrobo));
+  StroboFlux_bin2->RebinX(EnergyRebinStrobo);
+  StroboFlux_bin2->Scale(1.0/ double(EnergyRebinStrobo));
+  StroboFlux_bin3->RebinX(EnergyRebinStrobo);
+  StroboFlux_bin3->Scale(1.0/ double(EnergyRebinStrobo));
+  StroboFlux_bin4->RebinX(EnergyRebinStrobo);
+  StroboFlux_bin4->Scale(1.0/ double(EnergyRebinStrobo));
+  StroboFlux_bin5->RebinX(EnergyRebinStrobo);
+  StroboFlux_bin5->Scale(1.0/ double(EnergyRebinStrobo));
+  StroboFlux_bin6->RebinX(EnergyRebinStrobo);
+  StroboFlux_bin6->Scale(1.0/ double(EnergyRebinStrobo));
+  StroboFlux_underbin->RebinX(EnergyRebinStrobo);
+  StroboFlux_underbin->Scale(1.0/ double(EnergyRebinStrobo));
+  
 
   // Oscillate the FD flux
   for (int e = 0; e < FDFlux->GetXaxis()->GetNbins(); ++e) {
@@ -249,7 +294,7 @@ int main(int argc, const char *argv[]) {
 
   NEnergyBins = FDFlux->GetXaxis()->GetNbins();
 
-  size_t NAdditionalFluxes = 1; // Just 280kA at this point
+  size_t NAdditionalFluxes = 9; // Just 280kA at this point
 
   // Add aditional flux components here and increment the number of additional
   // fluxes
@@ -267,12 +312,20 @@ int main(int argc, const char *argv[]) {
 
     // Add additional flux components to the flux matrix here
     // NDFluxMatrix(ebin, 1) = SomeFlux->GetBinContent(ebin + 1);
-
+    NDFluxMatrix(ebin, 1) = StroboFlux_bin0->GetBinContent(ebin + 1);  
+    NDFluxMatrix(ebin, 2) = StroboFlux_bin1->GetBinContent(ebin + 1);  
+    NDFluxMatrix(ebin, 3) = StroboFlux_bin2->GetBinContent(ebin + 1);  
+    NDFluxMatrix(ebin, 4) = StroboFlux_bin3->GetBinContent(ebin + 1);  
+    NDFluxMatrix(ebin, 5) = StroboFlux_bin4->GetBinContent(ebin + 1);  
+    NDFluxMatrix(ebin, 6) = StroboFlux_bin5->GetBinContent(ebin + 1);  
+    NDFluxMatrix(ebin, 7) = StroboFlux_bin6->GetBinContent(ebin + 1);  
+    NDFluxMatrix(ebin, 8) = StroboFlux_underbin->GetBinContent(ebin + 1);
+    
     TargetFlux(ebin) = FDFlux->GetBinContent(ebin + 1);
 
-    for (int oabin = OnAxisBin; oabin < MaxOffAxisBin; ++oabin) {
-      NDFluxMatrix(ebin, NAdditionalFluxes + oabin - OnAxisBin) =
-          NDFlux_293kA->GetBinContent(ebin + 1, oabin);
+    for (int oabin = OnAxisBin+1; oabin < MaxOffAxisBin; ++oabin) {
+      NDFluxMatrix(ebin, NAdditionalFluxes + oabin - OnAxisBin-1) =
+	NDFlux_293kA->GetBinContent(ebin + 1, oabin);
     }
   }
 
@@ -280,13 +333,22 @@ int main(int argc, const char *argv[]) {
 
   RegMatrix(0, 0) = 1;
   // Add additional flux component regularisation here
-  //  RegMatrix(1, 1) = 1;
-
+  RegMatrix(1, 1) = 1;
+  RegMatrix(2, 2) = 1;
+  RegMatrix(3, 3) = 1;
+  RegMatrix(4, 4) = 1;
+  RegMatrix(5, 5) = 1;
+  RegMatrix(6, 6) = 1;
+  RegMatrix(7, 7) = 1;
+  RegMatrix(8, 8) = 1;
+  
   for (int coeff = NAdditionalFluxes; coeff < NCoeffs - 1; ++coeff) {
     RegMatrix(coeff, coeff) = 1;
     RegMatrix(coeff, coeff + 1) = -1;
   }
   RegMatrix(NCoeffs - 1, NCoeffs - 1) = 1;
+
+
 
   TCanvas c1("c1", "");
   c1.Print("Coeffs.pdf[");
