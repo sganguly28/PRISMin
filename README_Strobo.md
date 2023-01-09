@@ -25,3 +25,6 @@ Root > nuTree2GlobesFlux t
 
 Root > t.Loop();   // Loop on all entries
 
+The input file all_flux_laura_v3r5p4_nu_dec2422.root can be downloded from here
+
+https://drive.google.com/file/d/1KN5EyuSzy9jctRaXLBXkoGWgEfY94BnQ/view?usp=share_link
