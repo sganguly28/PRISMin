@@ -14,6 +14,7 @@
 
 #include <iostream>
 #include <memory>
+#include "TMath.h"
 
 enum NuTypes {
   kNuebarType = -1,
@@ -61,21 +62,15 @@ TH2D *NDFlux_293kA;
 TH2D *NDFlux_280kA;
 TH1D *FDFlux;
 
-TH1D *StroboFlux_bin0;
-TH1D *StroboFlux_bin1;
-TH1D *StroboFlux_bin2;
-TH1D *StroboFlux_bin3;
-TH1D *StroboFlux_bin4;
-TH1D *StroboFlux_bin5;
-TH1D *StroboFlux_bin6;
-TH1D *StroboFlux_underbin;
+std::array<TH1D *, 15> NDFluxOnAxisStroboTimeBin;
 
-
-
-size_t OnAxisBin;
-size_t MaxOffAxisBin;
-size_t NEnergyBins;
-size_t NCoeffs;
+struct BinMapping {
+  size_t NCoeffs;
+  size_t NNDAltHCBins;
+  size_t NNDStroboTimeBins;
+  size_t NNDOffAxisBins;
+  size_t NEnergyBins;
+};
 
 double GetMax(TH1 const &h) {
   double max = -std::numeric_limits<double>::max();
@@ -93,20 +88,35 @@ double GetMin(TH1 const &h) {
   return min;
 }
 
+double GetMax(std::vector<TH1 *> const &hs) {
+  double max = -std::numeric_limits<double>::max();
+  for (auto const &h : hs) {
+    max = std::max(max, GetMax(*h));
+  }
+  return max;
+}
+double GetMin(std::vector<TH1 *> const &hs) {
+  double min = std::numeric_limits<double>::max();
+  for (auto const &h : hs) {
+    min = std::min(min, GetMin(*h));
+  }
+  return min;
+}
+
 Eigen::VectorXd Solve(Eigen::MatrixXd const &NDFluxMatrix,
                       Eigen::MatrixXd const &RegMatrix,
-                      Eigen::VectorXd const &TargetFlux,
+                      Eigen::VectorXd const &TargetFlux, BinMapping const &bm,
                       std::pair<double, double> const &EnuFitLimits) {
 
   Eigen::MatrixXd WeightingMatrix =
-      Eigen::MatrixXd::Identity(NEnergyBins, NEnergyBins);
+    Eigen::MatrixXd::Identity(bm.NEnergyBins, bm.NEnergyBins);
 
   size_t FitRegionELow =
-      NDFlux_293kA->GetXaxis()->FindFixBin(EnuFitLimits.first);
+   NDFlux_293kA->GetXaxis()->FindFixBin(EnuFitLimits.first);
   size_t FitRegionEHigh =
-      NDFlux_293kA->GetXaxis()->FindFixBin(EnuFitLimits.second);
+    NDFlux_293kA->GetXaxis()->FindFixBin(EnuFitLimits.second);
 
-  for (int ebin = 0; ebin < NEnergyBins; ebin++) {
+  for (int ebin = 0; ebin < bm.NEnergyBins; ebin++) {
     if (ebin <= FitRegionELow) { // low energy bin(s) weight
       WeightingMatrix(ebin, ebin) *= 0.8;
     }
@@ -117,68 +127,83 @@ Eigen::VectorXd Solve(Eigen::MatrixXd const &NDFluxMatrix,
 
   return ((NDFluxMatrix.transpose() * WeightingMatrix * NDFluxMatrix) +
           RegMatrix.transpose() * RegMatrix)
-             .inverse() *
-         NDFluxMatrix.transpose() * WeightingMatrix * TargetFlux;
+    .inverse() *
+    NDFluxMatrix.transpose() * WeightingMatrix * TargetFlux;
 }
 
 void SolveAndDraw(Eigen::MatrixXd const &NDFluxMatrix, double RegParam,
-                  Eigen::MatrixXd RegMatrix, Eigen::VectorXd const &TargetFlux,
+                  Eigen::VectorXd const &TargetFlux, BinMapping const &bm,
                   std::pair<double, double> const &EnuFitLimits) {
+
+  Eigen::MatrixXd RegMatrix = Eigen::MatrixXd::Zero(bm.NCoeffs, bm.NCoeffs);
+
+  for (int coeff = 0; coeff < (bm.NNDAltHCBins + bm.NNDStroboTimeBins);
+       ++coeff) {
+    RegMatrix(coeff, coeff) = 1;
+  }
+
+  for (int coeff = (bm.NNDAltHCBins + bm.NNDStroboTimeBins);
+       coeff < bm.NCoeffs - 1; ++coeff) {
+    RegMatrix(coeff, coeff) = 1;
+    RegMatrix(coeff, coeff + 1) = -1;
+  }
+  RegMatrix(bm.NCoeffs - 1, bm.NCoeffs - 1) = 1;
 
   RegMatrix *= RegParam;
 
   Eigen::VectorXd OffAxisWeights =
-      Solve(NDFluxMatrix, RegMatrix, TargetFlux, EnuFitLimits);
+    Solve(NDFluxMatrix, RegMatrix, TargetFlux, bm, EnuFitLimits);
 
   Eigen::VectorXd SolutionFlux = NDFluxMatrix * OffAxisWeights;
 
-  TH1D AltHCAxisWeights_h("AltHCAxisWeights_h", ";280 kA;PRISM Coefficient", 1,
-                          0, 1);
-  AltHCAxisWeights_h.SetBinContent(1, OffAxisWeights(0));
-  TH1D OffAxisWeights_h("OffAxisWeights_h",
-                        ";293 kA, Off Axis (m);PRISM Coefficient", NCoeffs - 1,
-                        NDFlux_293kA->GetYaxis()->GetBinLowEdge(OnAxisBin),
-                        NDFlux_293kA->GetYaxis()->GetBinUpEdge(MaxOffAxisBin));
-  for (int i = 1; i < NCoeffs; ++i) {
-    OffAxisWeights_h.SetBinContent(i, OffAxisWeights(i));
+  TH1D CoeffWeights_h("CoeffWeights_h", ";C_{i};Weight", bm.NCoeffs, 0,
+                      bm.NCoeffs);
+  for (int i = 0; i < bm.NCoeffs; ++i) {
+    CoeffWeights_h.SetBinContent(i, OffAxisWeights(i));
   }
 
   TH1D SolutionFlux_h("SolutionFlux_h", ";280 kA, On Axis;PRISM Coefficient",
-                      NEnergyBins, NDFlux_293kA->GetXaxis()->GetBinLowEdge(1),
-                      NDFlux_293kA->GetXaxis()->GetBinUpEdge(NEnergyBins));
+                      bm.NEnergyBins,
+                      NDFlux_293kA->GetXaxis()->GetBinLowEdge(1),
+                      NDFlux_293kA->GetXaxis()->GetBinUpEdge(bm.NEnergyBins));
 
-  for (int ebin = 0; ebin < NEnergyBins; ebin++) {
+  for (int ebin = 0; ebin < bm.NEnergyBins; ebin++) {
     SolutionFlux_h.SetBinContent(ebin + 1, SolutionFlux(ebin));
   }
 
   TCanvas c2("c2", "");
 
-  double maxc = std::max(GetMax(AltHCAxisWeights_h), GetMax(OffAxisWeights_h));
-  double minc = std::min(GetMin(AltHCAxisWeights_h), GetMin(OffAxisWeights_h));
+  double maxc = GetMax(CoeffWeights_h);
+  double minc = GetMin(CoeffWeights_h);
 
   double absmaxc = std::max(std::abs(maxc), std::abs(minc));
 
-  TPad p1("p1", "", 0, 0, 0.3, 0.5);
+  TPad p1("p1", "", 0, 0, 1, 0.5);
   p1.AppendPad();
   p1.cd();
 
-  p1.SetLeftMargin(0.25);
-  AltHCAxisWeights_h.SetNdivisions(101);
-  AltHCAxisWeights_h.GetYaxis()->SetRangeUser(-absmaxc * 1.1, absmaxc * 1.1);
-  AltHCAxisWeights_h.Draw();
+  CoeffWeights_h.SetNdivisions(101);
+  CoeffWeights_h.SetLineWidth(2);
+  CoeffWeights_h.GetYaxis()->SetRangeUser(-absmaxc * 1.1, absmaxc * 1.1);
+  CoeffWeights_h.Draw();
+
+  if (bm.NNDAltHCBins) {
+    TLine *l = new TLine(bm.NNDAltHCBins, -absmaxc * 1.1, bm.NNDAltHCBins,
+                         absmaxc * 1.1);
+    l->SetLineColor(kRed);
+    l->Draw();
+  }
+
+  if (bm.NNDStroboTimeBins) {
+    TLine *l = new TLine(bm.NNDAltHCBins + bm.NNDStroboTimeBins, -absmaxc * 1.1,
+                         bm.NNDAltHCBins + bm.NNDStroboTimeBins, absmaxc * 1.1);
+    l->SetLineColor(kRed);
+    l->Draw();
+  }
 
   c2.cd();
-  TPad p2("p2", "", 0.3, 0, 1, 0.5);
-  p2.AppendPad();
-  p2.cd();
 
-  p2.SetLeftMargin(0);
-  OffAxisWeights_h.GetYaxis()->SetRangeUser(-absmaxc * 1.1, absmaxc * 1.1);
-  OffAxisWeights_h.Draw();
-
-  c2.cd();
-
-  TPad p3("p3", "", 0, 0.5, 1, 1);
+  TPad p3("p3", "", 0, 0.5, 1, 1.0);
   p3.AppendPad();
   p3.cd();
 
@@ -190,6 +215,7 @@ void SolveAndDraw(Eigen::MatrixXd const &NDFluxMatrix, double RegParam,
   FDFlux->Draw("HIST");
   SolutionFlux_h.SetLineColor(kGreen);
   SolutionFlux_h.Draw("HIST SAME");
+  
 
   TLatex tlx;
   tlx.SetTextAlign(32);
@@ -198,6 +224,13 @@ void SolveAndDraw(Eigen::MatrixXd const &NDFluxMatrix, double RegParam,
   ss << "Regularization Strength: " << std::scientific << RegParam;
 
   tlx.DrawLatexNDC(0.89, 0.85, ss.str().c_str());
+  tlx.DrawLatexNDC(0.89, 0.8,
+                   ("NAltHCBins: " + std::to_string(bm.NNDAltHCBins)).c_str());
+  tlx.DrawLatexNDC(
+      0.89, 0.75,
+      ("NStroboBins: " + std::to_string(bm.NNDStroboTimeBins)).c_str());
+  tlx.DrawLatexNDC(
+      0.89, 0.7, ("NPRISMBins: " + std::to_string(bm.NNDOffAxisBins)).c_str());
 
   TLine l1(EnuFitLimits.first, 0, EnuFitLimits.first, maxh);
   TLine l2(EnuFitLimits.second, 0, EnuFitLimits.second, maxh);
@@ -210,7 +243,7 @@ void SolveAndDraw(Eigen::MatrixXd const &NDFluxMatrix, double RegParam,
 
   c2.cd();
 
-  TLegend leg(0.6, 0.6, 0.9, 0.75);
+  TLegend leg(0.6, 0.7, 0.9, 0.85);
   leg.SetFillStyle(0);
   leg.SetBorderSize(0);
 
@@ -219,63 +252,227 @@ void SolveAndDraw(Eigen::MatrixXd const &NDFluxMatrix, double RegParam,
 
   leg.Draw();
 
+
+  /*TPad p6("p6", "", 0, 0.3, 1, 0.6);
+  p6.AppendPad();
+  p6.cd();
+  TH1F *ratio = (TH1F*)SolutionFlux_h.Clone("ratio");
+  ratio->Divide(FDFlux);
+  ratio->SetLineWidth(2);
+  ratio->SetLineColor(kBlack);
+  ratio->GetYaxis()->SetTitle("PRISM Fit/Target Flux");
+  ratio->GetXaxis()->SetTitle("Neutrino Energy (GeV)");
+  ratio->Draw("HIST SAME");
+  */
+  c2.cd();
+
   c2.Print("Coeffs.pdf");
+}
+
+void DrawFluxes(int OnAxisBin, int FirstFullOffAxisBin, int MaxOffAxisBin,
+                int NNDStroboTimeBins) {
+
+  TCanvas c3("c3", "");
+
+  TH1D *reference_flux = NDFlux_293kA->ProjectionX(
+      "df_reference_flux", FirstFullOffAxisBin, FirstFullOffAxisBin);
+
+  std::cout << "Ref bin: " << FirstFullOffAxisBin << std::endl;
+
+  // top left -- ND Off Axis + AltHC
+  TPad p1("c3_p1", "", 0, 0.5, 0.5, 1);
+  p1.AppendPad();
+  p1.cd();
+
+  TH1D *althc = NDFlux_280kA->ProjectionX("df_althc", 1, 1);
+  std::vector<TH1 *> off_axisfluxes;
+  std::vector<TH1 *> off_axisfluxes_dcs;
+  for (int i = OnAxisBin; i < MaxOffAxisBin; i += 10) {
+    off_axisfluxes.push_back(NDFlux_293kA->ProjectionX(
+        ("df_prism_slice" + std::to_string(i)).c_str(), i, i));
+  }
+  for (int i = 0; i < off_axisfluxes.size(); i++) {
+    if ((i == OnAxisBin)) {
+      double yaxup = 1.1 * GetMax(off_axisfluxes);
+      double yaxlow = 0.9 * GetMin(off_axisfluxes);
+      off_axisfluxes[i]->GetYaxis()->SetRangeUser(yaxlow, yaxup);
+      off_axisfluxes[i]->GetYaxis()->SetTitle("Flux (A.U.)");
+      off_axisfluxes_dcs.push_back(
+          static_cast<TH1 *>(off_axisfluxes[i]->DrawClone("CHIST PLC")));
+    } else {
+      off_axisfluxes_dcs.push_back(
+          static_cast<TH1 *>(off_axisfluxes[i]->DrawClone("CHIST PLC SAME")));
+    }
+  }
+  reference_flux->SetLineColor(kBlack);
+  reference_flux->DrawClone("CHIST SAME");
+  althc->SetLineColor(kRed);
+  althc->DrawClone("CHIST SAME");
+
+  TLegend *leg1 = new TLegend(0.4, 0.6, 0.95, 0.9);
+  leg1->SetFillStyle(0);
+  leg1->SetBorderSize(0);
+
+  leg1->AddEntry(reference_flux, "Reference flux (2.25m off axis)", "l");
+  leg1->AddEntry(althc, "280 kA", "l");
+  leg1->AddEntry(off_axisfluxes_dcs[2], "293 kA, 10m off axis", "l");
+
+  leg1->Draw();
+
+  c3.cd();
+  // top right -- Strobo
+  TPad p2("c3_p2", "", 0.5, 0.5, 1, 1);
+  p2.AppendPad();
+  p2.cd();
+
+  std::vector<TH1 *> strobo_fluxes;
+  std::vector<TH1 *> strobo_fluxes_dcs;
+  for (int i = 0; i < NNDStroboTimeBins; i++) {
+    strobo_fluxes.push_back(
+        static_cast<TH1 *>(NDFluxOnAxisStroboTimeBin[i]->Clone(
+            ("df_strobo_slice" + std::to_string(i)).c_str())));
+  }
+
+  for (int i = 0; i < NNDStroboTimeBins; i++) {
+    if (!i) {
+      double yaxup = 1.1 * GetMax(strobo_fluxes);
+      double yaxlow = 0.9 * GetMin(strobo_fluxes);
+      strobo_fluxes[i]->GetYaxis()->SetTitle("Flux (A.U.)");
+      strobo_fluxes[i]->GetYaxis()->SetRangeUser(yaxlow, yaxup);
+      strobo_fluxes_dcs.push_back(
+				  static_cast<TH1 *>(strobo_fluxes[i]->DrawClone("CHIST PLC")));
+    } else {
+      strobo_fluxes_dcs.push_back(
+				  static_cast<TH1 *>(strobo_fluxes[i]->DrawClone("CHIST PLC SAME")));
+    }
+  }
+
+  TLegend *leg2 = new TLegend(0.4, 0.6, 0.95, 0.9);
+  leg2->SetFillStyle(0);
+  leg2->SetBorderSize(0);
+
+  leg2->AddEntry(strobo_fluxes_dcs[0], "ND On axis Time Underflow", "l");
+  leg2->AddEntry(strobo_fluxes_dcs[1], "ND On axis Time bin 2", "l");
+  leg2->AddEntry(strobo_fluxes_dcs[3], "ND On axis Time bin 4", "l");
+
+  leg2->Draw();
+
+  c3.cd();
+  // bottom left
+  TPad p3("c3_p3", "", 0, 0, 0.5, 0.5);
+  p3.AppendPad();
+  p3.cd();
+  for (int i = 0; i < off_axisfluxes.size(); i++) {
+    off_axisfluxes[i]->Divide(reference_flux);
+  }
+  for (int i = 0; i < off_axisfluxes.size(); i++) {
+    if ((i == OnAxisBin)) {
+      double yaxup = 1.1 * GetMax(off_axisfluxes);
+      double yaxlow = 0.9 * GetMin(off_axisfluxes);
+      off_axisfluxes[i]->GetYaxis()->SetTitle("Flux/Reference");
+      off_axisfluxes[i]->GetYaxis()->SetRangeUser(yaxlow, yaxup);
+      off_axisfluxes[i]->DrawClone("CHIST PLC");
+    } else {
+      off_axisfluxes[i]->DrawClone("CHIST PLC SAME");
+    }
+  }
+  althc->Divide(reference_flux);
+  althc->DrawClone("CHIST SAME");
+
+  c3.cd();
+  // bottom right
+  TPad p4("c3_p4", "", 0.5, 0, 1, 0.5);
+  p4.AppendPad();
+  p4.cd();
+  for (int i = 0; i < NNDStroboTimeBins; i++) {
+    strobo_fluxes[i]->Divide(reference_flux);
+  }
+  for (int i = 0; i < NNDStroboTimeBins; i++) {
+    if (!i) {
+      double yaxup = 1.1 * GetMax(strobo_fluxes);
+      double yaxlow = 0.9 * GetMin(strobo_fluxes);
+      strobo_fluxes[i]->GetYaxis()->SetTitle("Flux/Reference");
+      strobo_fluxes[i]->GetYaxis()->SetRangeUser(yaxlow, yaxup);
+      strobo_fluxes[i]->DrawClone("CHIST PLC");
+    } else {
+      strobo_fluxes[i]->DrawClone("CHIST PLC SAME");
+    }
+  }
+
+  c3.Print("InputFluxes.pdf");
 }
 
 int main(int argc, const char *argv[]) {
 
   gStyle->SetOptStat(false);
 
-  TFile fin(argv[1], "READ");
-  TFile fin1(argv[2], "READ");
+  TFile PRISMFluxesFile(argv[1], "READ");
+  TFile StroboNDFluxesFile(argv[2], "READ");
 
-  NDFlux_293kA = fin.Get<TH2D>("ND_293kA_nu_numu");
-  NDFlux_280kA = fin.Get<TH2D>("ND_280kA_nu_numu");
-  FDFlux = fin.Get<TH1D>("FD_nu_numu");
+  NDFlux_293kA = PRISMFluxesFile.Get<TH2D>("ND_293kA_nu_numu");
+  NDFlux_280kA = PRISMFluxesFile.Get<TH2D>("ND_280kA_nu_numu");
+  FDFlux = PRISMFluxesFile.Get<TH1D>("FD_nu_numu");
+  //FDFlux = PRISMFluxesFile.Get<TH1D>("BeamEspect_vmu_bin0");
 
-  //8 additional histograms from strobocopic approach
+  size_t NAltHCBins = 1;
+  size_t OnAxisBin = NDFlux_293kA->GetYaxis()->FindFixBin(0.0);
+  size_t FirstFullOffAxisBin = NDFlux_293kA->GetYaxis()->FindFixBin(2.1);
+  size_t MaxOffAxisBin = NDFlux_293kA->GetYaxis()->FindFixBin(28.5);
+  size_t NPRISMBins = MaxOffAxisBin - OnAxisBin;
+  size_t NPRISMOffAxisBins = MaxOffAxisBin - FirstFullOffAxisBin;
 
-  StroboFlux_bin0 = fin1.Get<TH1D>("BeamEspect_vmu_bin0");
-  StroboFlux_bin1 = fin1.Get<TH1D>("BeamEspect_vmu_bin1");
-  StroboFlux_bin2 = fin1.Get<TH1D>("BeamEspect_vmu_bin2");
-  StroboFlux_bin3 = fin1.Get<TH1D>("BeamEspect_vmu_bin3");
-  StroboFlux_bin4 = fin1.Get<TH1D>("BeamEspect_vmu_bin4");
-  StroboFlux_bin5 = fin1.Get<TH1D>("BeamEspect_vmu_bin5");
-  StroboFlux_bin6 = fin1.Get<TH1D>("BeamEspect_vmu_bin6");
-  StroboFlux_underbin = fin1.Get<TH1D>("BeamEspect_vmu_under");  
-
-
-  OnAxisBin = NDFlux_293kA->GetYaxis()->FindFixBin(0.0);
-
-  MaxOffAxisBin = NDFlux_293kA->GetYaxis()->FindFixBin(28.5);
-
+  // 14 additional histograms from strobocopic approach 
+  size_t NNDStroboTimeBins = 15;
+  NDFluxOnAxisStroboTimeBin[0] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_under");
+  NDFluxOnAxisStroboTimeBin[1] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin0");
+  NDFluxOnAxisStroboTimeBin[2] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin1");
+  NDFluxOnAxisStroboTimeBin[3] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin2");
+  NDFluxOnAxisStroboTimeBin[4] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin3");
+  NDFluxOnAxisStroboTimeBin[5] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin4");
+  NDFluxOnAxisStroboTimeBin[6] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin5");
+  NDFluxOnAxisStroboTimeBin[7] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin6");
+  NDFluxOnAxisStroboTimeBin[8] =
+  StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin7");
+  NDFluxOnAxisStroboTimeBin[9] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin8");
+  NDFluxOnAxisStroboTimeBin[10] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin9");
+  NDFluxOnAxisStroboTimeBin[11] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin10");
+  NDFluxOnAxisStroboTimeBin[12] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin11");
+  NDFluxOnAxisStroboTimeBin[13] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin12");
+  NDFluxOnAxisStroboTimeBin[14] =
+    StroboNDFluxesFile.Get<TH1D>("BeamEspect_vmu_bin13");
+  
   // The fluxes we are using here are very finely binned in energy, average over
   // the bins and rescale back to the same normalization
-  int EnergyRebin = 10;
+  int EnergyRebin = 1;
   NDFlux_293kA->RebinX(EnergyRebin);
   NDFlux_293kA->Scale(1.0 / double(EnergyRebin));
   NDFlux_280kA->RebinX(EnergyRebin);
   NDFlux_280kA->Scale(1.0 / double(EnergyRebin));
 
+  // Rebin the alt HC run to average over the whole on axis position
+  int AltHCOffAxisRebin = 4;
+  NDFlux_280kA->RebinY(AltHCOffAxisRebin);
+  NDFlux_280kA->Scale(1.0 / double(AltHCOffAxisRebin));
 
-  int EnergyRebinStrobo = 5;
-  StroboFlux_bin0->RebinX(EnergyRebinStrobo);
-  StroboFlux_bin0->Scale(1.0/ double(EnergyRebinStrobo));
-  StroboFlux_bin1->RebinX(EnergyRebinStrobo);
-  StroboFlux_bin1->Scale(1.0/ double(EnergyRebinStrobo));
-  StroboFlux_bin2->RebinX(EnergyRebinStrobo);
-  StroboFlux_bin2->Scale(1.0/ double(EnergyRebinStrobo));
-  StroboFlux_bin3->RebinX(EnergyRebinStrobo);
-  StroboFlux_bin3->Scale(1.0/ double(EnergyRebinStrobo));
-  StroboFlux_bin4->RebinX(EnergyRebinStrobo);
-  StroboFlux_bin4->Scale(1.0/ double(EnergyRebinStrobo));
-  StroboFlux_bin5->RebinX(EnergyRebinStrobo);
-  StroboFlux_bin5->Scale(1.0/ double(EnergyRebinStrobo));
-  StroboFlux_bin6->RebinX(EnergyRebinStrobo);
-  StroboFlux_bin6->Scale(1.0/ double(EnergyRebinStrobo));
-  StroboFlux_underbin->RebinX(EnergyRebinStrobo);
-  StroboFlux_underbin->Scale(1.0/ double(EnergyRebinStrobo));
-  
+  int EnergyRebinStrobo = EnergyRebin;
+  for (int i = 0; i < NNDStroboTimeBins; ++i) {
+    NDFluxOnAxisStroboTimeBin[i]->SetTitle("");
+    NDFluxOnAxisStroboTimeBin[i]->RebinX(EnergyRebinStrobo);
+    NDFluxOnAxisStroboTimeBin[i]->Scale(1.0 / double(EnergyRebinStrobo));
+  }
 
   // Oscillate the FD flux
   for (int e = 0; e < FDFlux->GetXaxis()->GetNbins(); ++e) {
@@ -284,7 +481,8 @@ int main(int argc, const char *argv[]) {
     bc = FDFlux->GetBinContent(e + 1);
     be = FDFlux->GetBinError(e + 1);
 
-    bc *= Oscillate(FDFlux->GetXaxis()->GetBinCenter(e + 1));
+    bc *= Oscillate(FDFlux->GetXaxis()->GetBinCenter(e + 1), kNumubarType,
+                    kNumubarType);
 
     FDFlux->SetBinContent(e + 1, bc);
   }
@@ -292,69 +490,182 @@ int main(int argc, const char *argv[]) {
   FDFlux->RebinX(EnergyRebin);
   FDFlux->Scale(1.0 / double(EnergyRebin));
 
-  NEnergyBins = FDFlux->GetXaxis()->GetNbins();
+  FDFlux->Reset();
 
-  size_t NAdditionalFluxes = 9; // Just 280kA at this point
+  double GaussMean = 1.5; //GeV
 
-  // Add aditional flux components here and increment the number of additional
-  // fluxes
+  //Overwrite the oscillated flux with a pure gaussian
+  for(int i = 0; i < FDFlux->GetXaxis()->GetNbins(); ++i){
+    double Enu = FDFlux->GetXaxis()->GetBinCenter(i+1);
+    FDFlux->SetBinContent(i+1, TMath::Gaus(Enu, GaussMean, GaussMean*0.15, true));
+  }
 
-  NCoeffs = MaxOffAxisBin - OnAxisBin + NAdditionalFluxes;
 
-  Eigen::MatrixXd NDFluxMatrix = Eigen::MatrixXd::Zero(NEnergyBins, NCoeffs);
+
+  // End loading and rebinning of fluxes
+  DrawFluxes(OnAxisBin, FirstFullOffAxisBin, MaxOffAxisBin, NNDStroboTimeBins);
+
+  // peak scale hte FD and ND strobo fluxes
+  FDFlux->Scale(1.0 / GetMax(*FDFlux));
+  for (int i = 0; i < NNDStroboTimeBins; ++i) {
+    NDFluxOnAxisStroboTimeBin[i]->Scale(1.0 /
+                                        GetMax(*NDFluxOnAxisStroboTimeBin[i]));
+  }
+
+  size_t NEnergyBins = FDFlux->GetXaxis()->GetNbins();
+
+  // make matrices and bin mappings for a few different configurations
+  Eigen::MatrixXd NDFluxMatrix_PRISMAltHC =
+    Eigen::MatrixXd::Zero(NEnergyBins, NPRISMBins + NAltHCBins);
+  BinMapping NDBinMapping_PRISMAltHC{NPRISMBins + NAltHCBins, NAltHCBins, 0,
+      NPRISMBins, NEnergyBins};
+
+  Eigen::MatrixXd NDFluxMatrix_PRISMNoAltHC =
+    Eigen::MatrixXd::Zero(NEnergyBins, NPRISMBins);
+  BinMapping NDBinMapping_PRISMNoAltHC{NPRISMBins, 0, 0, NPRISMBins,
+      NEnergyBins};
+
+  Eigen::MatrixXd NDFluxMatrix_PRISMStroboAltHC = Eigen::MatrixXd::Zero(
+									NEnergyBins, NPRISMOffAxisBins + NAltHCBins + NNDStroboTimeBins);
+  BinMapping NDBinMapping_PRISMStroboAltHC{
+    NPRISMOffAxisBins + NAltHCBins + NNDStroboTimeBins, NAltHCBins,
+      NNDStroboTimeBins, NPRISMOffAxisBins, NEnergyBins};
+
+  Eigen::MatrixXd NDFluxMatrix_PRISMStroboNoAltHC =
+    Eigen::MatrixXd::Zero(NEnergyBins, NPRISMOffAxisBins + NNDStroboTimeBins);
+  BinMapping NDBinMapping_PRISMStroboNoAltHC{
+    NPRISMOffAxisBins + NNDStroboTimeBins, 0, NNDStroboTimeBins,
+      NPRISMOffAxisBins, NEnergyBins};
+
+  Eigen::MatrixXd NDFluxMatrix_NoPRISMStroboAltHC =
+    Eigen::MatrixXd::Zero(NEnergyBins, NNDStroboTimeBins + NAltHCBins);
+  BinMapping NDBinMapping_NoPRISMStroboAltHC{NNDStroboTimeBins + NAltHCBins, NAltHCBins, NNDStroboTimeBins, 0,
+      NEnergyBins};
 
   Eigen::VectorXd TargetFlux = Eigen::VectorXd::Zero(NEnergyBins);
 
+  // peak normalize the 2D histograms
+  double AltHCNormFact = -std::numeric_limits<double>::max();
   for (int ebin = 0; ebin < NEnergyBins; ++ebin) {
-
-    // Add the on-axis 280kA flux as the first column
-    NDFluxMatrix(ebin, 0) = NDFlux_280kA->GetBinContent(ebin + 1, OnAxisBin);
-
-    // Add additional flux components to the flux matrix here
-    // NDFluxMatrix(ebin, 1) = SomeFlux->GetBinContent(ebin + 1);
-    NDFluxMatrix(ebin, 1) = StroboFlux_bin0->GetBinContent(ebin + 1);  
-    NDFluxMatrix(ebin, 2) = StroboFlux_bin1->GetBinContent(ebin + 1);  
-    NDFluxMatrix(ebin, 3) = StroboFlux_bin2->GetBinContent(ebin + 1);  
-    NDFluxMatrix(ebin, 4) = StroboFlux_bin3->GetBinContent(ebin + 1);  
-    NDFluxMatrix(ebin, 5) = StroboFlux_bin4->GetBinContent(ebin + 1);  
-    NDFluxMatrix(ebin, 6) = StroboFlux_bin5->GetBinContent(ebin + 1);  
-    NDFluxMatrix(ebin, 7) = StroboFlux_bin6->GetBinContent(ebin + 1);  
-    NDFluxMatrix(ebin, 8) = StroboFlux_underbin->GetBinContent(ebin + 1);
-    
-    TargetFlux(ebin) = FDFlux->GetBinContent(ebin + 1);
-
-    for (int oabin = OnAxisBin+1; oabin < MaxOffAxisBin; ++oabin) {
-      NDFluxMatrix(ebin, NAdditionalFluxes + oabin - OnAxisBin-1) =
-	NDFlux_293kA->GetBinContent(ebin + 1, oabin);
+    AltHCNormFact =
+      std::max(AltHCNormFact, NDFlux_280kA->GetBinContent(ebin + 1, 1));
+  }
+  std::map<int, double> OffAxisNormFact;
+  for (int oabin = OnAxisBin + 1; oabin < MaxOffAxisBin; ++oabin) {
+    OffAxisNormFact[oabin] = -std::numeric_limits<double>::max();
+    for (int ebin = 0; ebin < NEnergyBins; ++ebin) {
+      OffAxisNormFact[oabin] = std::max(
+					OffAxisNormFact[oabin], NDFlux_293kA->GetBinContent(ebin + 1, oabin));
     }
   }
 
-  Eigen::MatrixXd RegMatrix = Eigen::MatrixXd::Zero(NCoeffs, NCoeffs);
+  // fill the ND matrices
+  for (int ebin = 0; ebin < NEnergyBins; ++ebin) {
 
-  RegMatrix(0, 0) = 1;
-  // Add additional flux component regularisation here
-  RegMatrix(1, 1) = 1;
-  RegMatrix(2, 2) = 1;
-  RegMatrix(3, 3) = 1;
-  RegMatrix(4, 4) = 1;
-  RegMatrix(5, 5) = 1;
-  RegMatrix(6, 6) = 1;
-  RegMatrix(7, 7) = 1;
-  RegMatrix(8, 8) = 1;
-  
-  for (int coeff = NAdditionalFluxes; coeff < NCoeffs - 1; ++coeff) {
-    RegMatrix(coeff, coeff) = 1;
-    RegMatrix(coeff, coeff + 1) = -1;
+    // each matrix tracks which bins it has filled as it goes along
+    int PRISMAltHC_fluxbin = 0;
+    int PRISMNoAltHC_fluxbin = 0;
+    int PRISMStroboAltHC_fluxbin = 0;
+    int PRISMStroboNoAltHC_fluxbin = 0;
+    int NoPRISMStroboAltHC_fluxbin = 0;
+
+    // Add the on-axis 280kA flux as the first column
+    double bc = NDFlux_280kA->GetBinContent(ebin + 1, 1) / AltHCNormFact;
+    // for matrices that include AltHC, add them first
+    NDFluxMatrix_PRISMAltHC(ebin, PRISMAltHC_fluxbin++) = bc;
+    NDFluxMatrix_PRISMStroboAltHC(ebin, PRISMStroboAltHC_fluxbin++) = bc;
+    NDFluxMatrix_NoPRISMStroboAltHC(ebin, NoPRISMStroboAltHC_fluxbin++) = bc;
+
+    for (size_t StroboNDTimeBin = 0; StroboNDTimeBin < NNDStroboTimeBins;
+         ++StroboNDTimeBin) {
+      double bc =
+	NDFluxOnAxisStroboTimeBin[StroboNDTimeBin]->GetBinContent(ebin + 1);
+      // for matrices that include Strobo, add them next
+      NDFluxMatrix_PRISMStroboAltHC(ebin, PRISMStroboAltHC_fluxbin++) = bc;
+      NDFluxMatrix_PRISMStroboNoAltHC(ebin, PRISMStroboNoAltHC_fluxbin++) = bc;
+      NDFluxMatrix_NoPRISMStroboAltHC(ebin, NoPRISMStroboAltHC_fluxbin++) = bc;
+    }
+
+    TargetFlux(ebin) = FDFlux->GetBinContent(ebin + 1);
+
+    for (int oabin = OnAxisBin + 1; oabin < MaxOffAxisBin; ++oabin) {
+      double bc =
+	NDFlux_293kA->GetBinContent(ebin + 1, oabin) / OffAxisNormFact[oabin];
+
+      // Add the PRISM off axis slices
+
+      NDFluxMatrix_PRISMAltHC(ebin, PRISMAltHC_fluxbin++) = bc;
+      NDFluxMatrix_PRISMNoAltHC(ebin, PRISMNoAltHC_fluxbin++) = bc;
+
+      // For strobo we want to ignore the full on axis prediction
+      if (oabin >= FirstFullOffAxisBin) {
+        NDFluxMatrix_PRISMStroboAltHC(ebin, PRISMStroboAltHC_fluxbin++) = bc;
+        NDFluxMatrix_PRISMStroboNoAltHC(ebin, PRISMStroboNoAltHC_fluxbin++) =
+	  bc;
+	//NDFluxMatrix_NoPRISMStroboAltHC(ebin, NoPRISMStroboAltHC_fluxbin++) =
+	//bc;
+      }
+    }
+
+    if (!ebin) {
+      std::cout << "PRISMAltHC_fluxbin: " << PRISMAltHC_fluxbin << std::endl;
+      std::cout << "PRISMNoAltHC_fluxbin: " << PRISMNoAltHC_fluxbin
+                << std::endl;
+      std::cout << "PRISMStroboAltHC_fluxbin: " << PRISMStroboAltHC_fluxbin
+                << std::endl;
+      std::cout << "PRISMStroboNoAltHC_fluxbin: " << PRISMStroboNoAltHC_fluxbin
+                << std::endl;
+      std::cout << "NoPRISMStroboAltHC_fluxbin: " << NoPRISMStroboAltHC_fluxbin
+                << std::endl;
+    }
   }
-  RegMatrix(NCoeffs - 1, NCoeffs - 1) = 1;
-
-
 
   TCanvas c1("c1", "");
   c1.Print("Coeffs.pdf[");
-  SolveAndDraw(NDFluxMatrix, 1E-7, RegMatrix, TargetFlux, {0.8, 3.5});
-  SolveAndDraw(NDFluxMatrix, 1E-8, RegMatrix, TargetFlux, {0.8, 3.5});
-  SolveAndDraw(NDFluxMatrix, 1E-9, RegMatrix, TargetFlux, {0.8, 3.5});
-  SolveAndDraw(NDFluxMatrix, 1E-10, RegMatrix, TargetFlux, {0.8, 3.5});
+  // SolveAndDraw(NDFluxMatrix_PRISMAltHC, 1E-2, TargetFlux,
+  //              NDBinMapping_PRISMAltHC, {0.8, 5});
+  // SolveAndDraw(NDFluxMatrix_PRISMAltHC, 2.5E-2, TargetFlux,
+  //              NDBinMapping_PRISMAltHC, {0.8, 5});
+  SolveAndDraw(NDFluxMatrix_PRISMAltHC, 5.0E-3, TargetFlux,
+                NDBinMapping_PRISMAltHC, {0.6, 8.0});
+  // SolveAndDraw(NDFluxMatrix_PRISMAltHC, 7.5E-2, TargetFlux,
+  //              NDBinMapping_PRISMAltHC, {0.8, 5});
+
+  // SolveAndDraw(NDFluxMatrix_PRISMNoAltHC, 1E-2, TargetFlux,
+  //              NDBinMapping_PRISMNoAltHC, {0.8, 5});
+  SolveAndDraw(NDFluxMatrix_PRISMNoAltHC, 5.0E-3, TargetFlux,
+                NDBinMapping_PRISMNoAltHC, {0.6,8.0});
+     //SolveAndDraw(NDFluxMatrix_PRISMNoAltHC, 5.0E-3, TargetFlux,
+     //        NDBinMapping_PRISMNoAltHC, {0.8, 5.0});
+  // SolveAndDraw(NDFluxMatrix_PRISMNoAltHC, 7.5E-2, TargetFlux,
+  //              NDBinMapping_PRISMNoAltHC, {0.8, 5});
+
+   SolveAndDraw(NDFluxMatrix_PRISMStroboNoAltHC, 5.0E-3, TargetFlux,
+                NDBinMapping_PRISMStroboNoAltHC, {0.6, 8.0});
+  //SolveAndDraw(NDFluxMatrix_PRISMStroboNoAltHC, 2.5E-2, TargetFlux,
+  //              NDBinMapping_PRISMStroboNoAltHC, {0.8, 5});
+  //SolveAndDraw(NDFluxMatrix_PRISMStroboNoAltHC, 5.0E-3, TargetFlux,
+  //             NDBinMapping_PRISMStroboNoAltHC, {0.8, 5.0});
+     //SolveAndDraw(NDFluxMatrix_PRISMStroboNoAltHC, 0.7E-2, TargetFlux,
+     //         NDBinMapping_PRISMStroboNoAltHC, {0.8, 5});
+
+   SolveAndDraw(NDFluxMatrix_PRISMStroboAltHC, 5.0E-3, TargetFlux,
+                NDBinMapping_PRISMStroboAltHC, {0.6, 8.0});
+  // SolveAndDraw(NDFluxMatrix_PRISMStroboAltHC, 2.5E-2, TargetFlux,
+  //              NDBinMapping_PRISMStroboAltHC, {0.8, 5});
+  //SolveAndDraw(NDFluxMatrix_PRISMStroboAltHC, 5.0E-3, TargetFlux,
+  //             NDBinMapping_PRISMStroboAltHC, {0.8, 5.0});
+     //SolveAndDraw(NDFluxMatrix_PRISMStroboAltHC, 1.0E-3, TargetFlux,
+     //         NDBinMapping_PRISMStroboAltHC, {0.8, 5});
+
+  //SolveAndDraw(NDFluxMatrix_NoPRISMStroboAltHC, 1.0E-2, TargetFlux,                                                      
+  //              NDBinMapping_NoPRISMStroboAltHC, {1.0, 5.0});   
+  // SolveAndDraw(NDFluxMatrix_NoPRISMStroboAltHC, 2.5E-2, TargetFlux,                                                      
+  //              NDBinMapping_NoPRISMStroboNoAltHC, {0.8, 5});     
+  SolveAndDraw(NDFluxMatrix_NoPRISMStroboAltHC,5E-3, TargetFlux,
+               NDBinMapping_NoPRISMStroboAltHC, {0.6, 8.0});
+  //SolveAndDraw(NDFluxMatrix_NoPRISMStroboAltHC, 7.5E-2, TargetFlux,                                                      
+  //           NDBinMapping_NoPRISMStroboAltHC, {0.8, 5});     
+   
   c1.Print("Coeffs.pdf]");
 }
